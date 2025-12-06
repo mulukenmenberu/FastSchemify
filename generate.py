@@ -4,7 +4,7 @@ Example usage of FastSchema
 from fast_schema import FastSchema
 
 # Example 1: Using ORM mode (default)
-generate = FastSchema(type='orm', output='generated_api')
+generate = FastSchema(type='sql', output='generated_api')
 generate.run()
 
 # # Example 2: Using SQL mode

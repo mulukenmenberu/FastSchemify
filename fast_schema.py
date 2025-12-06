@@ -191,20 +191,21 @@ settings = Settings()
             self._generate_sql_models()
     
     def _generate_orm_models(self):
-        """Generate SQLAlchemy ORM models"""
-        models_content = '''"""
-SQLAlchemy database models
+        """Generate SQLAlchemy ORM models with declarative classes"""
+        # Generate database.py with Base and engine
+        database_content = '''"""
+Database configuration and base model
 """
-from sqlalchemy import create_engine, MetaData, Table
-from sqlalchemy.orm import declarative_base
-from typing import Optional, Dict
+from sqlalchemy import create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
+from typing import Optional
 from app.core.config import settings
 
 Base = declarative_base()
-metadata = MetaData()
 
 # Lazy-loaded engine
 _engine = None
+SessionLocal = None
 
 def get_engine():
     """Get database engine (lazy initialization)"""
@@ -221,25 +222,19 @@ def get_engine():
             
             # Handle relative paths - resolve relative to project root (where .env is)
             if not os.path.isabs(db_path):
-                # Get project root (where app.py and .env are located)
-                # __file__ is in app/models/database.py, so go up 2 levels
                 project_root = Path(__file__).parent.parent.parent
                 full_path = project_root / db_path
                 
-                # Check if file exists
                 if full_path.exists():
                     db_path = str(full_path.absolute())
                 else:
-                    # Try just the filename in project root
                     filename_only = Path(db_path).name
                     filename_path = project_root / filename_only
                     if filename_path.exists():
                         db_path = str(filename_path.absolute())
                     else:
-                        # Use the path as-is, SQLAlchemy will try to create it
                         db_path = str(full_path.absolute())
             
-            # Verify database file exists (for SQLite)
             if not os.path.exists(db_path):
                 raise FileNotFoundError(
                     "SQLite database file not found: " + str(db_path) + 
@@ -263,48 +258,190 @@ def get_engine():
         _engine = create_engine(connection_string, echo=False)
     return _engine
 
-# Lazy-loaded table references
-_tables: Dict[str, Table] = {}
-
-def get_table(table_name: str) -> Table:
-    """Get table reference (lazy loading)"""
-    if table_name not in _tables:
+def get_session():
+    """Get database session"""
+    global SessionLocal
+    if SessionLocal is None:
         engine = get_engine()
-        try:
-            _tables[table_name] = Table(table_name, metadata, autoload_with=engine)
-        except Exception as e:
-            # Provide better error message
-            import os
-            db_path = settings.sqlite_path or settings.db_name or "database.db"
-            if settings.db_type == "sqlite":
-                resolved_path = os.path.abspath(db_path) if not os.path.isabs(db_path) else db_path
-                error_msg = (
-                    "Table '" + str(table_name) + "' not found in database. " +
-                    "Database path: " + str(db_path) + " (resolved: " + str(resolved_path) + "). " +
-                    "Make sure the database file exists and contains the table. " +
-                    "Original error: " + str(e)
-                )
-                raise ValueError(error_msg) from e
-            raise
-    return _tables[table_name]
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    return SessionLocal()
 
-def get_tables() -> Dict[str, Table]:
-    """Get all table references"""
-    return _tables
-
-# Convenience accessor (for backward compatibility)
-# Note: Use get_engine() and get_table() functions instead
-tables = _tables
+def init_tables():
+    """Initialize database tables (for compatibility)"""
+    # Import all models to register them with Base
+    from app.models import database
+    # Models are imported via __init__.py
+    pass
 '''
+        (self.output_dir / "app" / "models" / "database.py").write_text(database_content)
         
-        # Add table initialization function
-        table_names = list(self.schemas.keys())
-        models_content += f'\n\ndef init_tables():\n'
-        models_content += f'    """Initialize all tables"""\n'
-        for table_name in table_names:
-            models_content += f'    get_table("{table_name}")\n'
+        # Generate individual model files for each table
+        model_imports = []
+        for table_name, schema in self.schemas.items():
+            model_class_name = self._to_class_name(table_name)
+            model_content = self._generate_model_class(table_name, schema)
+            model_file = self.output_dir / "app" / "models" / f"{table_name}.py"
+            model_file.write_text(model_content)
+            model_imports.append(f"from app.models.{table_name} import {model_class_name}")
         
-        (self.output_dir / "app" / "models" / "database.py").write_text(models_content)
+        # Generate models __init__.py
+        init_content = '''"""
+Database models
+"""
+from app.models.database import Base
+
+'''
+        init_content += '\n'.join(model_imports)
+        init_content += '\n\n__all__ = [\n'
+        for table_name in self.schemas.keys():
+            init_content += f'    "{self._to_class_name(table_name)}",\n'
+        init_content += ']\n'
+        
+        (self.output_dir / "app" / "models" / "__init__.py").write_text(init_content)
+    
+    def _generate_model_class(self, table_name: str, schema: Dict[str, Any]) -> str:
+        """Generate a SQLAlchemy declarative model class for a table"""
+        class_name = self._to_class_name(table_name)
+        columns = []
+        import_types = set()
+        
+        # Get primary keys
+        primary_keys = schema.get("primary_keys", [])
+        if not primary_keys:
+            # Try to find from columns
+            for col_name, col_info in schema["columns"].items():
+                if col_info.get("primary_key"):
+                    primary_keys.append(col_name)
+        
+        # Generate columns
+        for col_name, col_info in schema["columns"].items():
+            col_def, col_imports = self._generate_column_definition(col_name, col_info, primary_keys, schema)
+            columns.append(col_def)
+            import_types.update(col_imports)
+        
+        # Build imports
+        import_lines = ["from sqlalchemy import Column"]
+        if import_types:
+            type_imports = sorted(list(import_types))
+            import_lines.append(f"from sqlalchemy import {', '.join(type_imports)}")
+        
+        # Generate foreign key relationships (simplified for now)
+        relationships = []
+        
+        model_content = f'''"""
+SQLAlchemy ORM model for {table_name} table
+"""
+{chr(10).join(import_lines)}
+from app.models.database import Base
+
+
+class {class_name}(Base):
+    """ORM model for {table_name}"""
+    __tablename__ = "{table_name}"
+    
+{chr(10).join(columns)}
+'''
+        if relationships:
+            model_content += '\n' + '\n'.join(relationships) + '\n'
+        
+        return model_content
+    
+    def _generate_column_definition(self, col_name: str, col_info: Dict[str, Any], primary_keys: list, schema: Dict[str, Any]) -> tuple:
+        """Generate SQLAlchemy column definition and return (definition, imports)"""
+        sql_type = col_info["type"]
+        nullable = col_info.get("nullable", False)
+        is_pk = col_name in primary_keys or col_info.get("primary_key", False)
+        default = col_info.get("default")
+        
+        # Map SQL types to SQLAlchemy types
+        sa_type, imports = self._get_sqlalchemy_type(sql_type)
+        
+        # Build column definition
+        parts = [f'    {col_name} = Column({sa_type}']
+        
+        # Add primary key
+        if is_pk:
+            parts.append("primary_key=True")
+        
+        # Add nullable
+        if not nullable and not is_pk:
+            parts.append("nullable=False")
+        elif nullable and not is_pk:
+            parts.append("nullable=True")
+        
+        # Add default
+        if default is not None:
+            if isinstance(default, str) and "CURRENT" in default.upper():
+                if "DATE" in default.upper():
+                    parts.append("server_default='CURRENT_DATE'")
+                elif "TIME" in default.upper():
+                    parts.append("server_default='CURRENT_TIMESTAMP'")
+            else:
+                # Try to evaluate default if it's a simple value
+                try:
+                    if default.isdigit():
+                        parts.append(f"default={int(default)}")
+                    else:
+                        parts.append(f"default={repr(default)}")
+                except:
+                    parts.append(f"default={repr(default)}")
+        
+        # Auto-increment for integer primary keys
+        if is_pk and "int" in sql_type.lower():
+            parts.append("autoincrement=True")
+        
+        col_def = ", ".join(parts) + ")"
+        return col_def, imports
+    
+    def _get_sqlalchemy_type(self, sql_type: str) -> tuple:
+        """Convert SQL type to SQLAlchemy type, returns (type_string, imports_set)"""
+        sql_type_lower = sql_type.lower()
+        imports = set()
+        
+        if "int" in sql_type_lower:
+            if "big" in sql_type_lower:
+                imports.add("BigInteger")
+                return "BigInteger", imports
+            elif "small" in sql_type_lower:
+                imports.add("SmallInteger")
+                return "SmallInteger", imports
+            else:
+                imports.add("Integer")
+                return "Integer", imports
+        elif "float" in sql_type_lower or "double" in sql_type_lower:
+            imports.add("Float")
+            return "Float", imports
+        elif "decimal" in sql_type_lower or "numeric" in sql_type_lower:
+            imports.add("Numeric")
+            return "Numeric", imports
+        elif "bool" in sql_type_lower:
+            imports.add("Boolean")
+            return "Boolean", imports
+        elif "date" in sql_type_lower and "time" not in sql_type_lower:
+            imports.add("Date")
+            return "Date", imports
+        elif "time" in sql_type_lower or "timestamp" in sql_type_lower:
+            imports.add("DateTime")
+            return "DateTime", imports
+        elif "text" in sql_type_lower:
+            imports.add("Text")
+            return "Text", imports
+        elif "varchar" in sql_type_lower or "char" in sql_type_lower:
+            imports.add("String")
+            # Try to extract length
+            import re
+            match = re.search(r'\((\d+)\)', sql_type)
+            if match:
+                length = match.group(1)
+                return f"String({length})", imports
+            return "String(255)", imports
+        else:
+            imports.add("String")
+            return "String(255)", imports  # Default
+    
+    def _to_class_name(self, table_name: str) -> str:
+        """Convert table_name to PascalCase class name"""
+        return ''.join(word.capitalize() for word in table_name.split('_'))
     
     def _generate_sql_models(self):
         """Generate raw SQL connection models"""
@@ -330,24 +467,40 @@ def get_connection():
             import sqlite3
             db_path = settings.sqlite_path or settings.db_name or "database.db"
             
-            # Handle relative paths
+            # Handle relative paths - try multiple locations
             if not os.path.isabs(db_path):
                 project_root = Path(__file__).parent.parent.parent
+                
+                # Try 1: Full path relative to project root
                 full_path = project_root / db_path
                 if full_path.exists():
                     db_path = str(full_path.absolute())
                 else:
+                    # Try 2: Just filename in project root
                     filename_only = Path(db_path).name
                     filename_path = project_root / filename_only
                     if filename_path.exists():
                         db_path = str(filename_path.absolute())
                     else:
-                        db_path = str(full_path.absolute())
+                        # Try 3: Parent directory (where generator was run from)
+                        parent_dir = project_root.parent
+                        parent_path = parent_dir / db_path
+                        if parent_path.exists():
+                            db_path = str(parent_path.absolute())
+                        else:
+                            # Try 4: Parent directory with just filename
+                            parent_filename = parent_dir / filename_only
+                            if parent_filename.exists():
+                                db_path = str(parent_filename.absolute())
+                            else:
+                                # Use project root as fallback
+                                db_path = str(full_path.absolute())
             
             if not os.path.exists(db_path):
                 raise FileNotFoundError(
-                    "SQLite database file not found: " + str(db_path) + 
-                    ". Please make sure the database file exists or update SQLITE_PATH in your .env file."
+                    f"SQLite database file not found: {db_path}. " +
+                    "Please make sure the database file exists or update SQLITE_PATH in your .env file. " +
+                    f"Tried: {db_path}"
                 )
             
             _connection = sqlite3.connect(db_path, check_same_thread=False)
@@ -399,108 +552,115 @@ def init_tables():
             self._generate_sql_services()
     
     def _generate_orm_services(self):
-        """Generate ORM-based services"""
+        """Generate ORM-based services using SQLAlchemy ORM models"""
         for table_name, schema in self.schemas.items():
             primary_key = self.schema_discovery.get_primary_key(table_name)
             if not primary_key:
                 primary_key = "id"  # Fallback
             
+            model_class_name = self._to_class_name(table_name)
+            service_class_name = f"{model_class_name}Service"
+            
             service_content = f'''"""
 Service layer for {table_name}
 """
 from typing import List, Dict, Any, Optional
-from sqlalchemy import select, insert, update, delete, text
-from app.models.database import get_engine, get_table
+from sqlalchemy.orm import Session
+from sqlalchemy import desc
+from app.models.database import get_session
+from app.models.{table_name} import {model_class_name}
 
-class {table_name.capitalize().replace("_", "")}Service:
+class {service_class_name}:
     """Service for {table_name} operations"""
     
     @staticmethod
     async def get_all(skip: int = 0, limit: int = 100, sort_by: Optional[str] = None, order: str = "asc") -> List[Dict[str, Any]]:
         """Get all items"""
-        table = get_table("{table_name}")
-        query = select(table).offset(skip).limit(limit)
-        
-        if sort_by:
-            if order == "desc":
-                query = query.order_by(table.c[sort_by].desc())
-            else:
-                query = query.order_by(table.c[sort_by])
-        
-        with get_engine().connect() as conn:
-            result = conn.execute(query)
-            rows = result.fetchall()
-            columns = result.keys()
-            return [dict(zip(columns, row)) for row in rows]
+        db: Session = get_session()
+        try:
+            query = db.query({model_class_name})
+            
+            if sort_by:
+                if order == "desc":
+                    query = query.order_by(desc(getattr({model_class_name}, sort_by)))
+                else:
+                    query = query.order_by(getattr({model_class_name}, sort_by))
+            
+            items = query.offset(skip).limit(limit).all()
+            return [{{k: v for k, v in item.__dict__.items() if not k.startswith('_')}} for item in items]
+        finally:
+            db.close()
     
     @staticmethod
     async def get_by_id(item_id: Any) -> Optional[Dict[str, Any]]:
         """Get item by ID"""
-        table = get_table("{table_name}")
-        query = select(table).where(table.c["{primary_key}"] == item_id)
-        
-        with get_engine().connect() as conn:
-            result = conn.execute(query)
-            row = result.fetchone()
-            if not row:
+        db: Session = get_session()
+        try:
+            item = db.query({model_class_name}).filter(getattr({model_class_name}, "{primary_key}") == item_id).first()
+            if not item:
                 return None
-            columns = result.keys()
-            return dict(zip(columns, row))
+            return {{k: v for k, v in item.__dict__.items() if not k.startswith('_')}}
+        finally:
+            db.close()
     
     @staticmethod
     async def create(item_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create new item"""
-        table = get_table("{table_name}")
-        query = insert(table).values(**item_data).returning(table)
-        
-        with get_engine().connect() as conn:
-            result = conn.execute(query)
-            conn.commit()
-            row = result.fetchone()
-            columns = result.keys()
-            return dict(zip(columns, row))
+        db: Session = get_session()
+        try:
+            item = {model_class_name}(**item_data)
+            db.add(item)
+            db.commit()
+            db.refresh(item)
+            return {{k: v for k, v in item.__dict__.items() if not k.startswith('_')}}
+        finally:
+            db.close()
     
     @staticmethod
     async def update(item_id: Any, item_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Update item"""
-        table = get_table("{table_name}")
-        query = update(table).where(table.c["{primary_key}"] == item_id).values(**item_data).returning(table)
-        
-        with get_engine().connect() as conn:
-            result = conn.execute(query)
-            conn.commit()
-            row = result.fetchone()
-            if not row:
+        db: Session = get_session()
+        try:
+            item = db.query({model_class_name}).filter(getattr({model_class_name}, "{primary_key}") == item_id).first()
+            if not item:
                 return None
-            columns = result.keys()
-            return dict(zip(columns, row))
+            
+            for key, value in item_data.items():
+                setattr(item, key, value)
+            
+            db.commit()
+            db.refresh(item)
+            return {{k: v for k, v in item.__dict__.items() if not k.startswith('_')}}
+        finally:
+            db.close()
     
     @staticmethod
     async def delete(item_id: Any) -> bool:
         """Delete item"""
-        table = get_table("{table_name}")
-        query = delete(table).where(table.c["{primary_key}"] == item_id)
-        
-        with get_engine().connect() as conn:
-            result = conn.execute(query)
-            conn.commit()
-            return result.rowcount > 0
+        db: Session = get_session()
+        try:
+            item = db.query({model_class_name}).filter(getattr({model_class_name}, "{primary_key}") == item_id).first()
+            if not item:
+                return False
+            db.delete(item)
+            db.commit()
+            return True
+        finally:
+            db.close()
     
     @staticmethod
     async def count() -> int:
         """Get total count"""
-        table = get_table("{table_name}")
-        query = select(text("COUNT(*)")).select_from(table)
-        
-        with get_engine().connect() as conn:
-            result = conn.execute(query)
-            return result.scalar()
+        db: Session = get_session()
+        try:
+            return db.query({model_class_name}).count()
+        finally:
+            db.close()
 '''
-            service_file = table_name.capitalize().replace("_", "")
             (self.output_dir / "app" / "services" / f"{table_name}_service.py").write_text(service_content)
     
     def _generate_sql_services(self):
-        """Generate raw SQL-based services"""
+        """Generate raw SQL-based services with proper parameterized queries"""
         for table_name, schema in self.schemas.items():
             primary_key = self.schema_discovery.get_primary_key(table_name)
             if not primary_key:
@@ -509,15 +669,19 @@ class {table_name.capitalize().replace("_", "")}Service:
             # Get column names for SQL queries
             columns = list(schema["columns"].keys())
             columns_str = ", ".join(columns)
+            service_class_name = f"{table_name.capitalize().replace('_', '')}Service"
+            
+            # Build column list for validation
+            columns_list_str = str(columns)
             
             service_content = f'''"""
 Service layer for {table_name} (Raw SQL)
 """
 from typing import List, Dict, Any, Optional
-from app.models.database import get_connection, get_cursor
+from app.models.database import get_connection
 from app.core.config import settings
 
-class {table_name.capitalize().replace("_", "")}Service:
+class {service_class_name}:
     """Service for {table_name} operations using raw SQL"""
     
     @staticmethod
@@ -526,22 +690,34 @@ class {table_name.capitalize().replace("_", "")}Service:
         conn = get_connection()
         cursor = conn.cursor()
         
-        query = "SELECT {columns_str} FROM {table_name}"
-        
-        if sort_by:
-            order_dir = "DESC" if order == "desc" else "ASC"
-            query += " ORDER BY " + sort_by + " " + order_dir
-        
-        # Add LIMIT and OFFSET
-        query += " LIMIT " + str(limit) + " OFFSET " + str(skip)
-        
-        cursor.execute(query)
-        
-        rows = cursor.fetchall()
-        if hasattr(cursor, "description") and cursor.description:
-            columns = [desc[0] for desc in cursor.description]
-            return [dict(zip(columns, row)) for row in rows]
-        return [dict(row) for row in rows]
+        try:
+            # Build query with column names (safe - from schema)
+            query = "SELECT {columns_str} FROM {table_name}"
+            
+            # Add ORDER BY if specified (validate column name to prevent SQL injection)
+            if sort_by:
+                # Validate sort_by is a valid column name
+                valid_columns = {columns_list_str}
+                if sort_by not in valid_columns:
+                    raise ValueError(f"Invalid sort column: {{sort_by}}")
+                order_dir = "DESC" if order.lower() == "desc" else "ASC"
+                query += f" ORDER BY {{sort_by}} {{order_dir}}"
+            
+            # Add LIMIT and OFFSET (parameterized)
+            placeholder = "?" if settings.db_type == "sqlite" else "%s"
+            query += f" LIMIT {{placeholder}} OFFSET {{placeholder}}"
+            cursor.execute(query, (limit, skip))
+            
+            rows = cursor.fetchall()
+            
+            # Convert to dict
+            if hasattr(cursor, "description") and cursor.description:
+                column_names = [desc[0] for desc in cursor.description]
+                return [dict(zip(column_names, row)) for row in rows]
+            # For dict-like rows (sqlite3.Row, pymysql DictCursor, etc.)
+            return [dict(row) for row in rows]
+        finally:
+            cursor.close()
     
     @staticmethod
     async def get_by_id(item_id: Any) -> Optional[Dict[str, Any]]:
@@ -549,18 +725,21 @@ class {table_name.capitalize().replace("_", "")}Service:
         conn = get_connection()
         cursor = conn.cursor()
         
-        placeholder = "?" if settings.db_type == "sqlite" else "%s"
-        query = "SELECT {columns_str} FROM {table_name} WHERE {primary_key} = " + placeholder
-        cursor.execute(query.format(columns_str=columns_str, table_name=table_name, primary_key=primary_key), (item_id,))
-        
-        row = cursor.fetchone()
-        if not row:
-            return None
-        
-        if hasattr(cursor, "description") and cursor.description:
-            columns = [desc[0] for desc in cursor.description]
-            return dict(zip(columns, row))
-        return dict(row)
+        try:
+            placeholder = "?" if settings.db_type == "sqlite" else "%s"
+            query = "SELECT {columns_str} FROM {table_name} WHERE {primary_key} = " + placeholder
+            cursor.execute(query, (item_id,))
+            
+            row = cursor.fetchone()
+            if not row:
+                return None
+            
+            if hasattr(cursor, "description") and cursor.description:
+                column_names = [desc[0] for desc in cursor.description]
+                return dict(zip(column_names, row))
+            return dict(row)
+        finally:
+            cursor.close()
     
     @staticmethod
     async def create(item_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -568,78 +747,100 @@ class {table_name.capitalize().replace("_", "")}Service:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Remove primary key from insert if it's auto-increment
-        insert_data = {{k: v for k, v in item_data.items() if k != "{primary_key}" or v is not None}}
-        insert_columns = ", ".join(insert_data.keys())
-        placeholder = "?" if settings.db_type == "sqlite" else "%s"
-        insert_placeholders = ", ".join([placeholder] * len(insert_data))
-        insert_values = list(insert_data.values())
-        
-        query = "INSERT INTO {table_name} (" + insert_columns + ") VALUES (" + insert_placeholders + ")"
-        
-        if settings.db_type in ["postgresql", "postgres"]:
-            query += " RETURNING *"
-        
-        cursor.execute(query.format(table_name=table_name), insert_values)
-        
-        conn.commit()
-        
-        # Get the inserted row
-        if settings.db_type in ["postgresql", "postgres"]:
-            row = cursor.fetchone()
-            if row:
-                if hasattr(cursor, "description") and cursor.description:
-                    columns = [desc[0] for desc in cursor.description]
-                    return dict(zip(columns, row))
-                return dict(row)
-        elif settings.db_type == "mysql":
-            # MySQL doesn't support RETURNING, fetch by last insert id
-            if "{primary_key}" in item_data:
-                return await {table_name.capitalize().replace("_", "")}Service.get_by_id(item_data["{primary_key}"])
-            else:
+        try:
+            # Remove primary key from insert if it's auto-increment and None
+            insert_data = {{k: v for k, v in item_data.items() if k != "{primary_key}" or v is not None}}
+            
+            if not insert_data:
+                raise ValueError("No data provided for insert")
+            
+            insert_columns = ", ".join(insert_data.keys())
+            placeholder = "?" if settings.db_type == "sqlite" else "%s"
+            insert_placeholders = ", ".join([placeholder] * len(insert_data))
+            insert_values = list(insert_data.values())
+            
+            query = "INSERT INTO {table_name} (" + insert_columns + ") VALUES (" + insert_placeholders + ")"
+            
+            if settings.db_type in ["postgresql", "postgres"]:
+                query += " RETURNING *"
+            
+            cursor.execute(query, insert_values)
+            conn.commit()
+            
+            # Get the inserted row
+            if settings.db_type in ["postgresql", "postgres"]:
+                row = cursor.fetchone()
+                if row:
+                    if hasattr(cursor, "description") and cursor.description:
+                        column_names = [desc[0] for desc in cursor.description]
+                        return dict(zip(column_names, row))
+                    return dict(row)
+            elif settings.db_type == "mysql":
+                # MySQL doesn't support RETURNING, fetch by last insert id
+                if "{primary_key}" in item_data and item_data["{primary_key}"]:
+                    return await {service_class_name}.get_by_id(item_data["{primary_key}"])
+                else:
+                    last_id = cursor.lastrowid
+                    if last_id:
+                        return await {service_class_name}.get_by_id(last_id)
+            else:  # SQLite
                 last_id = cursor.lastrowid
-                return await {table_name.capitalize().replace("_", "")}Service.get_by_id(last_id)
-        else:  # SQLite
-            last_id = cursor.lastrowid
-            return await {table_name.capitalize().replace("_", "")}Service.get_by_id(last_id)
-        
-        return item_data
+                if last_id:
+                    return await {service_class_name}.get_by_id(last_id)
+            
+            # Fallback: return the data we inserted
+            return item_data
+        finally:
+            cursor.close()
     
     @staticmethod
     async def update(item_id: Any, item_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Update item"""
         if not item_data:
-            return await {table_name.capitalize().replace("_", "")}Service.get_by_id(item_id)
+            return await {service_class_name}.get_by_id(item_id)
         
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Build SET clause
-        placeholder = "?" if settings.db_type == "sqlite" else "%s"
-        set_clause = ", ".join([col + " = " + placeholder for col in item_data.keys()])
-        values = list(item_data.values()) + [item_id]
-        
-        query = "UPDATE {table_name} SET " + set_clause + " WHERE {primary_key} = " + placeholder
-        
-        if settings.db_type in ["postgresql", "postgres"]:
-            query += " RETURNING *"
-        
-        cursor.execute(query.format(table_name=table_name, primary_key=primary_key), values)
-        
-        conn.commit()
-        
-        if settings.db_type in ["postgresql", "postgres"]:
-            row = cursor.fetchone()
-            if row:
-                if hasattr(cursor, "description") and cursor.description:
-                    columns = [desc[0] for desc in cursor.description]
-                    return dict(zip(columns, row))
-                return dict(row)
-        
-        if cursor.rowcount == 0:
-            return None
-        
-        return await {table_name.capitalize().replace("_", "")}Service.get_by_id(item_id)
+        try:
+            # Build SET clause with parameterized values
+            placeholder = "?" if settings.db_type == "sqlite" else "%s"
+            valid_columns = {columns_list_str}
+            set_parts = []
+            values = []
+            
+            for col in item_data.keys():
+                # Validate column name
+                if col not in valid_columns:
+                    raise ValueError(f"Invalid column name: {{col}}")
+                set_parts.append(col + " = " + placeholder)
+                values.append(item_data[col])
+            
+            set_clause = ", ".join(set_parts)
+            values.append(item_id)  # Add item_id for WHERE clause
+            
+            query = "UPDATE {table_name} SET " + set_clause + " WHERE {primary_key} = " + placeholder
+            
+            if settings.db_type in ["postgresql", "postgres"]:
+                query += " RETURNING *"
+            
+            cursor.execute(query, values)
+            conn.commit()
+            
+            if settings.db_type in ["postgresql", "postgres"]:
+                row = cursor.fetchone()
+                if row:
+                    if hasattr(cursor, "description") and cursor.description:
+                        column_names = [desc[0] for desc in cursor.description]
+                        return dict(zip(column_names, row))
+                    return dict(row)
+            
+            if cursor.rowcount == 0:
+                return None
+            
+            return await {service_class_name}.get_by_id(item_id)
+        finally:
+            cursor.close()
     
     @staticmethod
     async def delete(item_id: Any) -> bool:
@@ -647,12 +848,14 @@ class {table_name.capitalize().replace("_", "")}Service:
         conn = get_connection()
         cursor = conn.cursor()
         
-        placeholder = "?" if settings.db_type == "sqlite" else "%s"
-        query = "DELETE FROM {table_name} WHERE {primary_key} = " + placeholder
-        cursor.execute(query.format(table_name=table_name, primary_key=primary_key), (item_id,))
-        
-        conn.commit()
-        return cursor.rowcount > 0
+        try:
+            placeholder = "?" if settings.db_type == "sqlite" else "%s"
+            query = "DELETE FROM {table_name} WHERE {primary_key} = " + placeholder
+            cursor.execute(query, (item_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            cursor.close()
     
     @staticmethod
     async def count() -> int:
@@ -660,13 +863,22 @@ class {table_name.capitalize().replace("_", "")}Service:
         conn = get_connection()
         cursor = conn.cursor()
         
-        query = "SELECT COUNT(*) FROM {table_name}"
-        cursor.execute(query.format(table_name=table_name))
-        
-        result = cursor.fetchone()
-        if result:
-            return result[0] if isinstance(result, (list, tuple)) else result
-        return 0
+        try:
+            query = "SELECT COUNT(*) FROM {table_name}"
+            cursor.execute(query)
+            
+            result = cursor.fetchone()
+            if result:
+                if isinstance(result, dict):
+                    # For dict cursors, get first value
+                    return list(result.values())[0]
+                elif isinstance(result, (list, tuple)):
+                    return result[0]
+                else:
+                    return int(result)
+            return 0
+        finally:
+            cursor.close()
 '''
             (self.output_dir / "app" / "services" / f"{table_name}_service.py").write_text(service_content)
     
