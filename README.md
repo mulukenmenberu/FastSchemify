@@ -12,12 +12,12 @@ FastAPI Schema Generator is a powerful tool that automatically generates complet
 
 ### Key Features
 
-- 🚀 **Zero Configuration** - Connect to your database and generate APIs instantly
-- 🗄️ **Multi-Database Support** - MySQL, PostgreSQL, MongoDB, and SQLite
-- 📊 **Automatic Schema Discovery** - Intelligently infers schemas from your database
-- 🔄 **Full CRUD Operations** - Create, Read, Update, Delete endpoints for every table
-- 📝 **Auto-Generated Documentation** - Swagger/OpenAPI docs out of the box
-- 🏗️ **Production-Ready Architecture** - Clean separation of concerns with services, models, and routers
+- ⚡ **Zero Configuration** - Connect to your database and generate APIs instantly
+- ⚡ **Multi-Database Support** - MySQL, PostgreSQL, MongoDB, and SQLite
+- ⚡ **Automatic Schema Discovery** - Intelligently infers schemas from your database
+- ⚡ **Full CRUD Operations** - Create, Read, Update, Delete endpoints for every table
+- ⚡ **Auto-Generated Documentation** - Swagger/OpenAPI docs out of the box
+- ⚡ **Production-Ready Architecture** - Clean separation of concerns with services, models, and routers
 - 🔍 **Advanced Querying** - Built-in pagination, sorting, and filtering
 - ⚡ **Type-Safe** - Full type hints and Pydantic validation
 
@@ -119,18 +119,27 @@ generated_api/
 ├── requirements.txt           # Dependencies
 ├── .env                       # Configuration
 └── app/
-    ├── main.py               # FastAPI application
+    ├── main.py                # FastAPI application
     ├── core/
     │   └── config.py          # Settings management
-    ├── models/
-    │   └── database.py       # SQLAlchemy models
-    ├── services/             # Business logic layer
-    │   ├── users_service.py
+    ├── models/                # Database models
+    │   ├── database.py        # Database connection/engine
+    │   ├── students.py        # SQLAlchemy ORM models (ORM mode)
+    │   ├── courses.py
+    │   └── ...
+    ├── schemas/               # Pydantic validation schemas
+    │   ├── students.py        # Request/response schemas
+    │   ├── courses.py
+    │   └── ...
+    ├── services/              # Business logic layer
+    │   ├── students_service.py
+    │   ├── courses_service.py
     │   └── ...
     └── api/
         └── v1/
-            └── endpoints/    # REST API endpoints
-                ├── users.py
+            └── endpoints/     # REST API endpoints
+                ├── students.py
+                ├── courses.py
                 └── ...
 ```
 
