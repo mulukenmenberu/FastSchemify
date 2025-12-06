@@ -7,8 +7,8 @@ from fast_schema import FastSchema
 generate = FastSchema(type='sql', output='generated_api')
 generate.run()
 
-# # Example 2: Using SQL mode
-# generate = FastSchema(type='sql', output='generated_api_sql')
+# # Example 2: Using raw SQL queries mode
+# generate = FastSchema(type='query', output='generated_api_query')
 # generate.run()
 
 # # Example 3: Step by step

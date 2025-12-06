@@ -23,13 +23,16 @@ class FastSchema:
         Initialize FastSchema generator
         
         Args:
-            type: Database access type - 'orm' (SQLAlchemy) or 'sql' (raw SQL). Default: 'orm'
+            type: Database access type - 'orm' (SQLAlchemy ORM) or 'query' (raw SQL queries). Default: 'orm'
             output: Output directory for generated project. Default: 'generated_api'
             **kwargs: Additional configuration options (for future use)
         """
         self.type = type.lower()
-        if self.type not in ["orm", "sql"]:
-            raise ValueError(f"Invalid type: {self.type}. Must be 'orm' or 'sql'")
+        if self.type not in ["orm", "query"]:
+            raise ValueError(
+                f"Invalid type: '{type}'. Must be 'orm' (SQLAlchemy ORM) or 'query' (raw SQL queries). "
+                f"Note: Use 'query' instead of 'sql' for raw SQL mode."
+            )
         
         self.output_dir = Path(output)
         self.use_orm = self.type == "orm"
@@ -42,7 +45,7 @@ class FastSchema:
     
     def connect(self):
         """Connect to database and discover schemas"""
-        print("🔌 Connecting to database...")
+        print("✓  Connecting to database...")
         self.db_connection = get_database_connection()
         
         if not self.db_connection:
@@ -88,7 +91,7 @@ class ProjectGenerator:
         self.db_connection = None
         self.schema_discovery = None
         self.schemas: Dict[str, Dict[str, Any]] = {}
-        self.use_orm = use_orm  # True for SQLAlchemy ORM, False for raw SQL
+        self.use_orm = use_orm  # True for SQLAlchemy ORM, False for raw SQL queries
     
     def generate_project(self):
         """Generate complete FastAPI project"""
@@ -97,15 +100,15 @@ class ProjectGenerator:
         
         # Create output directory
         if self.output_dir.exists():
-            print(f"⚠️  Output directory '{self.output_dir}' exists. Removing...")
+            print(f"✓  Output directory '{self.output_dir}' exists. Removing...")
             shutil.rmtree(self.output_dir)
         
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        print(f"📁 Creating project structure in '{self.output_dir}'...")
+        print(f"✓ Creating project structure in '{self.output_dir}'...")
         
         # Show mode
-        mode = "SQLAlchemy ORM" if self.use_orm else "Raw SQL"
-        print(f"🔧 Using {mode} mode")
+        mode = "SQLAlchemy ORM" if self.use_orm else "Raw SQL Queries"
+        print(f"✓ Using {mode} mode")
         
         # Generate project structure
         self._create_directory_structure()
@@ -883,59 +886,29 @@ class {service_class_name}:
             (self.output_dir / "app" / "services" / f"{table_name}_service.py").write_text(service_content)
     
     def _generate_routers(self):
-        """Generate FastAPI routers"""
-        # Generate router for each table
+        """Generate FastAPI routers and Pydantic schemas"""
+        # First, generate Pydantic schemas for each table
+        for table_name, schema in self.schemas.items():
+            self._generate_pydantic_schemas(table_name, schema)
+        
+        # Then generate routers that import the schemas
         for table_name, schema in self.schemas.items():
             primary_key = self.schema_discovery.get_primary_key(table_name)
             if not primary_key:
                 primary_key = "id"
             
             service_name = f"{table_name.capitalize().replace('_', '')}Service"
-            
-            # Generate Pydantic schemas
-            create_fields = []
-            update_fields = []
-            
-            for col_name, col_info in schema["columns"].items():
-                if col_info.get("primary_key"):
-                    continue
-                
-                col_type = self._get_pydantic_type(col_info["type"])
-                nullable = col_info.get("nullable", False)
-                
-                if nullable:
-                    create_fields.append(f'    {col_name}: Optional[{col_type}] = None')
-                else:
-                    create_fields.append(f'    {col_name}: {col_type}')
-                
-                update_fields.append(f'    {col_name}: Optional[{col_type}] = None')
+            schema_class_prefix = table_name.capitalize().replace("_", "")
             
             router_content = f'''"""
 API router for {table_name}
 """
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query, Body
-from pydantic import BaseModel
 from app.services.{table_name}_service import {service_name}
+from app.schemas.{table_name} import {schema_class_prefix}Create, {schema_class_prefix}Update
 
 router = APIRouter(prefix="/{table_name}", tags=["{table_name}"])
-
-
-# Pydantic schemas
-class {table_name.capitalize().replace("_", "")}Create(BaseModel):
-    """Create schema for {table_name}"""
-{chr(10).join(create_fields) if create_fields else "    pass"}
-
-    class Config:
-        from_attributes = True
-
-
-class {table_name.capitalize().replace("_", "")}Update(BaseModel):
-    """Update schema for {table_name}"""
-{chr(10).join(update_fields) if update_fields else "    pass"}
-
-    class Config:
-        from_attributes = True
 
 
 @router.get("/", response_model=List[dict])
@@ -959,13 +932,13 @@ async def get_one(item_id: int):
 
 
 @router.post("/", response_model=dict, status_code=201)
-async def create_item(item: {table_name.capitalize().replace("_", "")}Create):
+async def create_item(item: {schema_class_prefix}Create):
     """Create a new {table_name} item"""
     return await {service_name}.create(item.dict(exclude_unset=True))
 
 
 @router.put("/{{item_id}}", response_model=dict)
-async def update_item(item_id: int, item: {table_name.capitalize().replace("_", "")}Update):
+async def update_item(item_id: int, item: {schema_class_prefix}Update):
     """Update a {table_name} item"""
     result = await {service_name}.update(item_id, item.dict(exclude_unset=True))
     if not result:
@@ -997,6 +970,66 @@ async def get_count():
     return {{"count": await {service_name}.count()}}
 '''
             (self.output_dir / "app" / "api" / "v1" / "endpoints" / f"{table_name}.py").write_text(router_content)
+        
+        # Generate router index
+        router_index = '''"""
+API router index
+"""
+from fastapi import APIRouter
+'''
+        for table_name in self.schemas.keys():
+            router_index += f'from app.api.v1.endpoints import {table_name} as {table_name}_router\n'
+        
+        router_index += '\napi_router = APIRouter()\n'
+        for table_name in self.schemas.keys():
+            router_index += f'api_router.include_router({table_name}_router.router)\n'
+        
+        (self.output_dir / "app" / "api" / "v1" / "__init__.py").write_text(router_index)
+    
+    def _generate_pydantic_schemas(self, table_name: str, schema: Dict[str, Any]):
+        """Generate Pydantic schemas for a table"""
+        create_fields = []
+        update_fields = []
+        
+        for col_name, col_info in schema["columns"].items():
+            if col_info.get("primary_key"):
+                continue
+            
+            col_type = self._get_pydantic_type(col_info["type"])
+            nullable = col_info.get("nullable", False)
+            
+            if nullable:
+                create_fields.append(f'    {col_name}: Optional[{col_type}] = None')
+            else:
+                create_fields.append(f'    {col_name}: {col_type}')
+            
+            update_fields.append(f'    {col_name}: Optional[{col_type}] = None')
+        
+        schema_class_prefix = table_name.capitalize().replace("_", "")
+        
+        schema_content = f'''"""
+Pydantic schemas for {table_name}
+"""
+from typing import Optional
+from pydantic import BaseModel
+
+
+class {schema_class_prefix}Create(BaseModel):
+    """Create schema for {table_name}"""
+{chr(10).join(create_fields) if create_fields else "    pass"}
+
+    class Config:
+        from_attributes = True
+
+
+class {schema_class_prefix}Update(BaseModel):
+    """Update schema for {table_name}"""
+{chr(10).join(update_fields) if update_fields else "    pass"}
+
+    class Config:
+        from_attributes = True
+'''
+        (self.output_dir / "app" / "schemas" / f"{table_name}.py").write_text(schema_content)
         
         # Generate router index
         router_index = '''"""
