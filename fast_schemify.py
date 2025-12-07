@@ -1,5 +1,5 @@
 """
-FastSchema - FastAPI Schema Generator
+FastSchemify - FastAPI Schema Generator
 """
 import os
 import shutil
@@ -10,7 +10,7 @@ from database.schema_discovery import SchemaDiscovery
 from config import settings
 
 
-class FastSchema:
+class FastSchemify:
     """Main class for generating FastAPI projects from database schemas"""
     
     def __init__(
@@ -20,7 +20,7 @@ class FastSchema:
         **kwargs
     ):
         """
-        Initialize FastSchema generator
+        Initialize FastSchemify generator
         
         Args:
             type: Database access type - 'orm' (SQLAlchemy ORM) or 'query' (raw SQL queries). Default: 'orm'

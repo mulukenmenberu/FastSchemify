@@ -13,7 +13,7 @@ FastAPI Schema Generator is a powerful tool that automatically generates complet
 ### Key Features
 
 - ⚡ **Zero Configuration** - Connect to your database and generate APIs instantly
-- ⚡ **Multi-Database Support** - MySQL, PostgreSQL, MongoDB, and SQLite
+- ⚡ **Multi-Database Support** - MySQL, PostgreSQL, MongoDB (Comming soon), and SQLite
 - ⚡ **Automatic Schema Discovery** - Intelligently infers schemas from your database
 - ⚡ **Full CRUD Operations** - Create, Read, Update, Delete endpoints for every table
 - ⚡ **Auto-Generated Documentation** - Swagger/OpenAPI docs out of the box
@@ -95,7 +95,7 @@ DB_USER=your_username
 DB_PASSWORD=your_password
 ```
 
-#### MongoDB
+#### MongoDB (comming soon)
 
 ```env
 DB_TYPE=mongodb

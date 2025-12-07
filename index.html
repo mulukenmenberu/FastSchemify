@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FastSchema Logo Fixed</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@800&display=swap');
+
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f4f4f4; /* Light gray background to see the logo */
+            font-family: 'Nunito', sans-serif;
+        }
+
+        .logo-container {
+            text-align: center;
+            background: white;
+            padding: 50px;
+            border-radius: 20px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+        }
+
+        .logo-main {
+            font-size: 80px;
+            line-height: 1;
+            margin-bottom: 5px;
+            letter-spacing: -2px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* The Custom F with the swoosh */
+        .custom-f {
+            position: relative;
+            color: #127582;
+            margin-right: -2px;
+        }
+        
+        /* Simulating the swoosh on the F */
+        .custom-f::before {
+            content: '';
+            position: absolute;
+            top: 15px;
+            left: -10px;
+            width: 40px;
+            height: 20px;
+            background: white;
+            border-radius: 0 0 50% 0;
+            z-index: 2;
+            display: none; /* Removed for cleaner look, but can be added back */
+        }
+
+        .text-fast {
+            color: #127582; /* Dark Teal */
+        }
+
+        .text-schema {
+            color: #2CD1C4; /* Bright Teal/Cyan */
+        }
+
+        .tagline {
+            font-size: 24px;
+            color: #127582; /* Matches "Fast" color */
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            margin-top: 0;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="logo-container">
+        <div class="logo-main">
+            <!-- Using a standard rounded font to recreate the look cleanly -->
+            <span class="text-fast">Fast</span><span class="text-schema">Schemify</span>
+        </div>
+        <div class="tagline">Opensource FastAPI Toolkit</div>
+    </div>
+
+</body>
+</html>
